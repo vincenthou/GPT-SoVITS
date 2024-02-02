@@ -1,3 +1,4 @@
+import util
 import os,shutil,sys,pdb,re
 now_dir = os.getcwd()
 sys.path.append(now_dir)
@@ -187,6 +188,9 @@ def change_tts_inference(if_tts,bert_path,cnhubert_base_path,gpu_number,gpt_path
         yield i18n("TTS推理进程已开启")
         print(cmd)
         p_tts_inference = Popen(cmd, shell=True)
+        cmd = '"%s" api.py -s "%s" -g "%s"'%(python_exec,os.environ["sovits_path"],os.environ["gpt_path"])
+        print(cmd)
+        Popen(cmd, shell=True)
     elif(if_tts==False and p_tts_inference!=None):
         kill_process(p_tts_inference.pid)
         p_tts_inference=None
@@ -313,7 +317,8 @@ def close1Bb():
     return "已终止GPT训练",{"__type__":"update","visible":True},{"__type__":"update","visible":False}
 
 ps_slice=[]
-def open_slice(inp,opt_root,threshold,min_length,min_interval,hop_size,max_sil_kept,_max,alpha,n_parts):
+def open_slice(folder,audio,inp_old,opt_root,threshold,min_length,min_interval,hop_size,max_sil_kept,_max,alpha,n_parts):
+    inp = folder or audio or inp_old
     global ps_slice
     inp = my_utils.clean_path(inp)
     opt_root = my_utils.clean_path(opt_root)
@@ -645,6 +650,56 @@ def close1abc():
         ps1abc=[]
     return "已终止所有一键三连进程", {"__type__": "update", "visible": True}, {"__type__": "update", "visible": False}
 
+def delfolders():
+    print("=====开始清理目录=====")
+    folders = ["output", ["asr_opt", "slicer_opt", "uvr5_opt"]]
+    # Test the function
+    util.delete_folder_structure(*folders)
+    util.create_folder_structure(*folders)
+    return "目录完成清理"
+
+js = """
+() => {
+    const host = document.querySelector('gradio-app')
+    const shadowRoot = host.shadowRoot || host.attachShadow({mode: 'open'})
+    const tasks = [
+        {btn: '#component-11 button:nth-child(1)', result: '#component-15 span', text: '是否开启UVR5-WebUI'},
+        {btn: '#component-30', result: '#component-35 textarea', text: '切割结束'},
+        {btn: '#component-39', result: '#component-42 textarea', text: 'ASR任务完成'},
+        {btn: '#component-11 button:nth-child(2)', result: '#component-52 textarea', text: 'model'},
+        {btn: '#component-92', result: '#component-94 textarea', text: '一键三连进程结束'},
+        {btn: '#component-138 button:nth-child(2)', result: '#component-99 span', text: '每张显卡的batch_size'},
+        {btn: '#component-108', result: '#component-110 textarea', text: 'SoVITS训练完成'},
+        {btn: '#component-122', result: '#component-124 textarea', text: 'GPT训练完成'},
+        {btn: '#component-138 button:nth-child(3)', result: '#component-128', text: '刷新模型路径'},
+        // {btn: '#component-132', result: }
+    ]
+    const clicked = {'': ''}
+    function clickAndCheck(task, cb) {
+        const { btn, result, text, callback, check } = task
+        if (!clicked[btn]) {
+            const targetDOM = shadowRoot.querySelector(btn)
+            targetDOM.click()
+            clicked[btn] = true
+        }
+        const resultDOM = shadowRoot.querySelector(result)
+        const content = resultDOM.value || resultDOM.innerText
+        const checked = check ? check() : text === content
+        if (checked) { 
+            cb()
+            callback && callback()
+        }
+    }
+    let index = 0
+    const finishCb = () => { index++ }
+    const timer = setInterval(() => {
+        const task = tasks[index]
+        console.log(task, clicked, index)
+        clickAndCheck(task, finishCb)
+    }, 1000)
+}
+"""
+
 with gr.Blocks(title="GPT-SoVITS WebUI") as app:
     gr.Markdown(
         value=
@@ -655,6 +710,22 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
             i18n("中文教程文档：https://www.yuque.com/baicaigongchang1145haoyuangong/ib3g1e")
     )
 
+    gr.Markdown(value="【简单模式】-直接选择需要处理的干声音频（使用下面UVR5-WebUI或者UVR5软件处理过）")
+    with gr.Row():
+        with gr.Column(scale=4):
+            audio_folder_filepath=gr.Textbox(label="音频文件夹或者文件路径", placeholder="C:\\Users\\Desktop\\todo-songs")
+            audio_filepath = gr.Audio(
+                label=i18n("也只选择单个音频文件, 二选一, 优先读👆文件夹"),
+                interactive=True,
+                source="upload",
+                type="filepath"
+            )
+        with gr.Column():
+            del_info = gr.Markdown(
+                value=
+                    "<b>注意：</b>本整合包旨在简化使用方法，高阶用法可以按照原软件功能正常使用<br>"
+            )
+            gr.Button("自动训练", variant="primary", visible=True).click(delfolders, [], [del_info], _js=js)
     with gr.Tabs():
         with gr.TabItem(i18n("0-前置数据集获取工具")):#提前随机切片防止uvr5爆内存->uvr5->slicer->asr->打标
             gr.Markdown(value=i18n("0a-UVR5人声伴奏分离&去混响去延迟工具"))
@@ -686,7 +757,7 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                     with gr.Row():
                         asr_inp_dir = gr.Textbox(
                             label=i18n("输入文件夹路径"),
-                            value="D:\\GPT-SoVITS\\raw\\xxx",
+                            value="output/slicer_opt",
                             interactive=True,
                         )
                         asr_opt_dir = gr.Textbox(
@@ -724,13 +795,13 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
                     return {"__type__": "update", "choices": asr_dict[key]['size']}
                 asr_model.change(change_lang_choices, [asr_model], [asr_lang])
                 asr_model.change(change_size_choices, [asr_model], [asr_size])
-                
+
             gr.Markdown(value=i18n("0d-语音文本校对标注工具"))
             with gr.Row():
                 if_label = gr.Checkbox(label=i18n("是否开启打标WebUI"),show_label=True)
                 path_list = gr.Textbox(
                     label=i18n(".list标注文件的路径"),
-                    value="D:\\RVC1006\\GPT-SoVITS\\raw\\xxx.list",
+                    value="output/asr_opt/slicer_opt.list",
                     interactive=True,
                 )
                 label_info = gr.Textbox(label=i18n("打标工具进程输出信息"))
@@ -738,11 +809,11 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
             if_uvr5.change(change_uvr5, [if_uvr5], [uvr5_info])
             open_asr_button.click(open_asr, [asr_inp_dir, asr_opt_dir, asr_model, asr_size, asr_lang], [asr_info,open_asr_button,close_asr_button])
             close_asr_button.click(close_asr, [], [asr_info,open_asr_button,close_asr_button])
-            open_slicer_button.click(open_slice, [slice_inp_path,slice_opt_root,threshold,min_length,min_interval,hop_size,max_sil_kept,_max,alpha,n_process], [slicer_info,open_slicer_button,close_slicer_button])
+            open_slicer_button.click(open_slice, [audio_folder_filepath,audio_filepath,slice_inp_path,slice_opt_root,threshold,min_length,min_interval,hop_size,max_sil_kept,_max,alpha,n_process], [slicer_info,open_slicer_button,close_slicer_button])
             close_slicer_button.click(close_slice, [], [slicer_info,open_slicer_button,close_slicer_button])
         with gr.TabItem(i18n("1-GPT-SoVITS-TTS")):
             with gr.Row():
-                exp_name = gr.Textbox(label=i18n("*实验/模型名"), value="xxx", interactive=True)
+                exp_name = gr.Textbox(label=i18n("*实验/模型名"), value="model", interactive=True)
                 gpu_info = gr.Textbox(label=i18n("显卡信息"), value=gpu_info, visible=True, interactive=False)
                 pretrained_s2G = gr.Textbox(label=i18n("预训练的SoVITS-G模型路径"), value="GPT_SoVITS/pretrained_models/s2G488k.pth", interactive=True)
                 pretrained_s2D = gr.Textbox(label=i18n("预训练的SoVITS-D模型路径"), value="GPT_SoVITS/pretrained_models/s2D488k.pth", interactive=True)
@@ -750,9 +821,10 @@ with gr.Blocks(title="GPT-SoVITS WebUI") as app:
             with gr.TabItem(i18n("1A-训练集格式化工具")):
                 gr.Markdown(value=i18n("输出logs/实验名目录下应有23456开头的文件和文件夹"))
                 with gr.Row():
-                    inp_text = gr.Textbox(label=i18n("*文本标注文件"),value=r"D:\RVC1006\GPT-SoVITS\raw\xxx.list",interactive=True)
+                    inp_text = gr.Textbox(label=i18n("*文本标注文件"),value=r"output/asr_opt/slicer_opt.list",interactive=True)
                     inp_wav_dir = gr.Textbox(
                         label=i18n("*训练集音频文件目录"),
+                        value=r"output/slicer_opt",
                         # value=r"D:\RVC1006\GPT-SoVITS\raw\xxx",
                         interactive=True,
                         placeholder=i18n("填切割后音频所在目录！读取的音频文件完整路径=该目录-拼接-list文件里波形对应的文件名（不是全路径）。如果留空则使用.list文件里的绝对全路径。")
